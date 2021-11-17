@@ -1,0 +1,10 @@
+<launch>
+        <include file="$(find turtlebot3_gazebo)/launch/two_turtlebot3.launch"/>
+
+        <node pkg="multi_robot" type="dynamic_env_HM.py" name="dynamic_env_HM" output="screen"/>
+
+	<node pkg="multi_robot" type="keyboard_teleop.py" name="keyboard_teleop" output="screen"/>
+</launch>
+
+
+
