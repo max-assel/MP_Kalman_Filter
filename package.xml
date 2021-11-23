@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>multi_robot</name>
+  <name>MP_Kalman_Filter</name>
   <version>0.0.0</version>
   <description>The multi_robot package</description>
 

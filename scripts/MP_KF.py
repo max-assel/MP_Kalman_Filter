@@ -13,6 +13,7 @@ from geometry_msgs.msg import Point, Twist
 
 from odom_set import odom_set
 
+from sympy import *
 first_call = True
 x = 0.0
 y = 0.0
@@ -25,17 +26,17 @@ y_0 = 0.0
 
 dist_thresh = np.inf
 
-# cartesisan state of system-target relatives is:
+# cartesisan state of system[5*np.pi/4]-target relatives is:
 # [v_x, v_y, r_x, r_y]
 
 # modified polar state of system-target relatives is:
 # [beta_dot, r_dot / r, beta, 1 / r]
 # initial guess
-y_kmin1_kmin1 = np.array([[0.0], [0.0], [np.pi/4], [1.0]], dtype=float)
-P_kmin1_kmin1 = np.array([[1.0, 0.0, 0.0, 0.0],
-                          [0.0, 1.0, 0.0, 0.0],
-                          [0.0, 0.0, 1.0, 0.0],
-                          [0.0, 0.0, 0.0, 1.0]], dtype=float)
+y_kmin1_kmin1 = np.array([[0.0], [0.0], [2.0], [1.0]], dtype=float)
+P_kmin1_kmin1 = np.array([[0.1, 0.1, 0.0, 0.0],
+                          [0.1, 0.1, 0.0, 0.0],
+                          [0.0, 0.0, 0.1, 0.1],
+                          [0.0, 0.0, 0.1, 0.1]], dtype=float)
 
 # t0 = (k - 1) * T, T is sampling rate
 t0 = time.time()
@@ -46,10 +47,53 @@ a_oy = np.array([], dtype=float)
 
 # question to answer: is this just a single value, or are these updates all at the same rate?
 
-H = np.array([[0, 0, 1, 0]], dtype=float)
+H = np.array([[0.0, 0.0, 1.0, 0.0],
+              [0.0, 0.0, 0.0, 1.0]], dtype=float)
 
-R = 0.05
+R = 0.01
 first = True
+
+y1_, y2_, y3_, y4_ = symbols('y1 y2 y3 y4', real=True)
+w1_, w2_, w3_, w4_ = symbols('w1 w2 w3 w4', real=True)
+x1_, x2_, x3_, x4_ = symbols('x1 x2 x3 x4', real=True)
+y_ = [y1_, y2_, y3_, y4_]
+x_ = [x1_, x2_, x3_, x4_]
+t_, t0_ = symbols('t t0', real=True)
+place_holder = Symbol('x')
+G1 = None
+G2 = None
+G3 = None
+
+def linearize_MP_transition():
+    global G1, G2, G3
+    f_x = Matrix([[y2_ * sin(y3_) + y1_ * cos(y3_)],
+                  [y2_ * cos(y3_) - y1_ * sin(y3_)],
+                  [sin(y3_)],
+                  [cos(y3_)]])
+
+    A_x = Matrix([[1, 0, 0, 0],
+                  [0, 1, 0, 0],
+                  [t_ - t0_, 0, 1, 0],
+                  [0, t_ - t0_, 0, 1]])
+
+    f_y = Matrix([(x1_ * x4_ - x2_ * x3_) / (x3_ * x3_ + x4_ * x4_),
+                  (x1_ * x3_ + x2_ * x4_) / (x3_ * x3_ + x4_ * x4_),
+                  (atan(x3_ / x4_)),
+                  1 / sqrt(x3_ * x3_ + x4_ * x4_)])
+
+    G1 = f_x.jacobian(y_)
+    G1 = lambdify([y1_, y2_, y3_, y4_], G1, 'numpy')
+
+    G2 = A_x
+    G2 = lambdify([t_, t0_], G2, 'numpy')
+
+    G3 = f_y.jacobian(x_)
+    G3 = lambdify([x1_, x2_, x3_, x4_], G3, 'numpy')
+
+    # return fx_jacobian, A_x_jacobian, fy_jacobian
+
+linearize_MP_transition()
+
 
 def odom_callback(odom_msg):
     global x, y, theta, first_call
@@ -93,6 +137,10 @@ def fx_operator(y_t):
     y2 = y_t[1][0]
     y3 = y_t[2][0]
     y4 = y_t[3][0]
+    #print('y1: ', y1)
+    #print('y2: ', y2)
+    #print('y3: ', y3)
+    #print('y4: ', y4)
     # rospy.loginfo('{0}'.format(1 / y4))
     fx_y_t = np.divide(np.array([[y2*np.sin(y3) + y1*np.cos(y3)],
                                  [y2*np.cos(y3) - y1*np.sin(y3)],
@@ -111,87 +159,107 @@ def fy_operator(x_t):
     #rospy.loginfo('x3: {0}'.format(x3))
     #rospy.loginfo('x4: {0}'.format(x4))
 
-    fy_x_t = np.array([[(x1*x4 - x2*x3) / (x3**2 + x4**2)],
-              [(x1*x3 + x2*x4) / (x3**2 + x4**2)],
+    fy_x_t = np.array([[(x1*x4 - x2*x3) / (x3*x3 + x4*x4)],
+              [(x1*x3 + x2*x4) / (x3*x3 + x4*x4)],
               [np.arctan2(x3, x4)],
-              [1 / np.sqrt(x3**2 + x4**2)]], dtype=float)
+              [1 / np.sqrt(x3*x3 + x4*x4)]], dtype=float)
 
     return fy_x_t
 
-def compute_A_y(y_k_kmin1, y_kmin1_kmin1):
-    #rospy.loginfo('y_k_kmin1: {0}'.format(y_k_kmin1))
-    #rospy.loginfo('y_kmin1_kmin1: {0}'.format(y_kmin1_kmin1))
-    row_length = np.shape(y_k_kmin1)[0]
-    y_kmin1_kmin1 = np.array(y_kmin1_kmin1, dtype=float).flatten()
-    A_y = []
-    for i in range(0, row_length):
-        y_k_kmin1_i = y_k_kmin1[i]
-        #rospy.loginfo('y_k_kmin1_i: {0}'.format(y_k_kmin1_i))
-        y_k_kmin1_i_row = np.repeat(y_k_kmin1_i, row_length)
-        #rospy.loginfo('y_k_kmin1_i_row: {0}'.format(y_k_kmin1_i_row))
-        # rospy.loginfo('y_kmin1_kmin1: {0}'.format(y_kmin1_kmin1))
-        y_k_kmin1_i_grad = np.gradient(np.array([y_kmin1_kmin1, y_k_kmin1_i_row], dtype=float), axis=0)
-        #rospy.loginfo('y_k_kmin1_i_grad[0]: {0}'.format(y_k_kmin1_i_grad[0]))
-        A_y.append(y_k_kmin1_i_grad[0])
-    # rospy.loginfo('A_y size: {0}'.format(np.shape(A_y)))
-    return A_y
+def compute_A_y(x_k_kmin1, y_kmin1_kmin1, t, t0, w):
+    global A_y, G1, G2, G3
+    #A_y_eval = A_y(y_kmin1_kmin1[0], y_kmin1_kmin1[1], y_kmin1_kmin1[2], y_kmin1_kmin1[3], t, t0,
+    #      w[0], w[1], w[2], w[3])
+    # A_y_eval = np.squeeze(A_y_eval)
+    #print('fx jacobian shape: ', np.shape(fx_jacobian))
+    #print('fx jacobian: ', fx_jacobian)
+
+    #fx_jacobian = fx_jacobian(y_kmin1_kmin1[0], y_kmin1_kmin1[1], y_kmin1_kmin1[2], y_kmin1_kmin1[3])
+    #A_x_jacobian = A_x_jacobian(t, t0)
+    #print('A_x_jacobian shape: ', np.shape(fx_jacobian))
+    #fy_jacobian = fy_jacobian(y_k_kmin1[0], y_k_kmin1[1], y_k_kmin1[2], y_k_kmin1[3],
+    #                          t, t0, w[0], w[1], w[2], w[3])
+    #print('fy_jacobian shape: ', np.shape(fy_jacobian))
+    #A_y_eval = np.matmul(fy_jacobian, np.matmul(A_x_jacobian, fx_jacobian))
+    #print('A_y_eval shape: ', np.shape(A_y_eval))
+    G1_eval = G1(y_kmin1_kmin1[0], y_kmin1_kmin1[1], y_kmin1_kmin1[2], y_kmin1_kmin1[3])
+    G2_eval = G2(t, t0)
+    G3_eval = G3(x_k_kmin1[0], x_k_kmin1[1], x_k_kmin1[2], x_k_kmin1[3])
+    A_y_eval = np.matmul(G3_eval, np.matmul(G2_eval, G1_eval))
+    # print('A_y_eval shape: ', np.shape(A_y_eval))
+
+    A_y_eval = np.array([[A_y_eval[0][0][0], A_y_eval[0][1][0], A_y_eval[0][2][0], A_y_eval[0][3][0]],
+                         [A_y_eval[1][0][0], A_y_eval[1][1][0], A_y_eval[1][2][0], A_y_eval[1][3][0]],
+                         [A_y_eval[2][0][0], A_y_eval[2][1][0], A_y_eval[2][2][0], A_y_eval[2][3][0]],
+                         [A_y_eval[3][0][0], A_y_eval[3][1][0], A_y_eval[3][2][0], A_y_eval[3][3][0]]], dtype=float)
+    # print('A_y_eval: ', A_y_eval)
+
+    return A_y_eval
 
 
 def kf_update_loop(y_t):
     global first, a_ox, a_oy, t0, y_kmin1_kmin1, P_kmin1_kmin1
     t = time.time()
-
+    print('time period: ', t - t0)
+    print('sensor reading: ', y_t)
     # calculate accelerative noise
-    w = compute_accels(copy.deepcopy(a_ox), copy.deepcopy(a_oy), t0, t)
-    # rospy.loginfo('w: {0}'.format(w))
+    w = compute_accels(a_ox, a_oy, t0, t)
+    print('w, accelerative noise: ', w)
+    print('y_kmin1_kmin1, initial state: ', y_kmin1_kmin1)
+    # Calculating y( K / K - 1), state estimate step
+    x_kmin1_kmin1 = fx_operator(y_kmin1_kmin1)
+    print('x_kmin1_kmin1, state estimate in Cartesian: ', x_kmin1_kmin1)
+    #rospy.loginfo('fx_y_t0: {0}'.format(fx_y_t0))
     A_x_t_t0 = [[1, 0, 0, 0],
-                [0, 0, 0, 0],
+                [0, 1, 0, 0],
                 [t - t0, 0, 1, 0],
                 [0, t - t0, 0, 1]]
-    # Calculating y( K / K - 1), state estimate step
-    fx_y_t0 = fx_operator(y_kmin1_kmin1)
-    rospy.loginfo('fx_y_t0: {0}'.format(fx_y_t0))
-    x_t = np.matmul(A_x_t_t0, fx_y_t0) + w
-    rospy.loginfo('x_t: {0}'.format(x_t))
-    y_k_kmin1 = fy_operator(x_t)
+    print('A_x_t_t0, transition matrix: ', A_x_t_t0)
+    x_k_kmin1 = np.matmul(A_x_t_t0, x_kmin1_kmin1) + w
+    print('x_k_kmin1, state estimate in Cartesian: ', x_k_kmin1)
+
+    #rospy.loginfo('x_t: {0}'.format(x_t))
+    y_k_kmin1 = fy_operator(x_k_kmin1)
+    print('y_k_kmin1, state estimate in MP: ', y_k_kmin1)
 
     # Calculating A_y estimate, A matrix for MP coordinates
-    A_y = compute_A_y(y_k_kmin1, y_kmin1_kmin1)
-    rospy.loginfo('A_y: {0}'.format(A_y))
+    A_y = compute_A_y(x_k_kmin1, y_kmin1_kmin1, t0, t, w)
+    print('A_y, Jacobian of MP matrix: ', A_y)
 
     # Calculating covariance matrix estimate
     P_k_kmin1 = np.matmul(np.matmul(A_y, P_kmin1_kmin1), np.transpose(A_y, (0, 1)))
-
+    print('P_k_kmin1, covariance estimate: ', P_k_kmin1)
     # Calculating Kalman gain
     H_tranpose = np.transpose(H)
-    #rospy.loginfo('P_k_kmin1 size: {0}'.format(np.shape(P_k_kmin1)))
-    #rospy.loginfo('H_transpose size: {0}'.format(np.shape(H_tranpose)))
-    #rospy.loginfo('H_transpose : {0}'.format(H_tranpose))
-
     pt1 = np.matmul(P_k_kmin1, H_tranpose)
     pt2 = np.matmul(np.matmul(H, P_k_kmin1), H_tranpose)
-    pt3 = np.random.normal(loc=0, scale=R, size=1)
+    pt3 = np.random.normal(loc=0, scale=R, size=1) * np.eye(len(H))
 
-    #rospy.loginfo('pt1 size: {0}'.format(np.shape(pt1)))
-    #rospy.loginfo('pt2 size: {0}'.format(np.shape(pt2)))
-    #rospy.loginfo('pt3 size: {0}'.format(np.shape(pt3)))
-
-    G_k = pt1 * np.linalg.inv(pt2 + pt3)
-
+    print('pt1: ', pt1)
+    print('pt2: ', pt2)
+    print('pt3: ', pt3)
+    print('pt2 + pt3: ', pt2+pt3)
+    # if H is only one value, inverse needs to be removed
+    # NOTE REMOVING R FOR NOW, TRUSTING MEASUREMENTS
+    if len(H) > 1:
+        G_k = np.matmul(pt1, np.linalg.inv(pt2 + pt3))
+    else:
+        G_k = pt1 * (1 / (pt2 + pt3))
+    print('G_k, Kalman gain: ', G_k)
     # Calculating the state update
-    beta_tilde_k = np.matmul(H, y_t) + pt3
-    y_k_k = y_k_kmin1 + G_k * (beta_tilde_k - np.matmul(H, y_k_kmin1))
+    eta_t = np.random.normal(loc=0, scale=R, size=1)
+    if len(H) > 1:
+        beta_tilde_k = np.reshape(np.matmul(H, y_t) + eta_t, (2, 1))
+    else:
+        beta_tilde_k = np.matmul(H, y_t) + eta_t
 
-
-    # rospy.loginfo('G_k: {0}'.format(G_k))
+    print('beta_tilde_k, sensor measurement: ', beta_tilde_k)
+    y_k_k = y_k_kmin1 + np.matmul(G_k, (beta_tilde_k - np.matmul(H, y_k_kmin1)))
+    print('y_k_k, state update: ', y_k_k)
 
     # Calculating the covariance update
-    rospy.loginfo('H: {0}'.format(H))
-    rospy.loginfo('G: {0}'.format(G_k))
-    rospy.loginfo('P_k_kmin1: {0}'.format(P_k_kmin1))
-
-    P_k_k = (np.eye(4) - G_k*H) * P_k_kmin1
-    rospy.loginfo('P_k_k: {0}'.format(P_k_k))
+    P_k_k = np.matmul((np.eye(4) - np.matmul(G_k, H)), P_k_kmin1)
+    print('P_k_k: ', P_k_k)
 
     # setting old estimates equal to new estimates
     y_kmin1_kmin1 = y_k_k
@@ -201,8 +269,8 @@ def kf_update_loop(y_t):
     ax1 = plt.subplot(121)
     plt.title('Bearing comparison')
     plt.scatter(t, y_k_kmin1[2], c='r', marker='o', label='Bearing estimate')
-    plt.scatter(t, beta_tilde_k, c='k', marker='^', label='Bearing measurement')
-    plt.ylim([-3.25, 3.25])
+    plt.scatter(t, y_t[2], c='k', marker='^', label='Bearing measurement')
+    plt.ylim([-6.28, 6.28])
     plt.xlim([t - 5, t + 5])
     #@ax1.legend('Prediction', 'Sensor')
     if first:
@@ -261,10 +329,16 @@ def scan_callback(scan_msg):
 
     lidar_pt = [[lidar_pt_x], [lidar_pt_y], [1]]
     world_pt = np.matmul(robot_to_world_T, lidar_pt)
-
+    print('lidar_pt: ', lidar_pt)
     lidar_endpoint = np.array([world_pt[0][0], world_pt[1][0]])
+    # robot state: x, y, theta
+    # object state: lidar_endpoint[0], lidar_endpoint[1]
+    print('lidar_endpoint: ', lidar_endpoint)
+    print('x, y,', (x,y))
+    r_vector = [lidar_endpoint[0] - x, lidar_endpoint[1] - y] # obstacle_state - robot_state
     # here, bearing ranges from -pi to pi
-    y_t = np.array([0.0, 0.0, np.arctan2(lidar_pt_x, lidar_pt_y), 1.0 / obj_range], dtype=float)
+
+    y_t = np.array([0.0, 0.0, np.arctan2(r_vector[0], r_vector[1]), 1.0 / np.linalg.norm(r_vector)], dtype=float)
     kf_update_loop(y_t)
     #print('object point: ', lidar_endpoint)
 
@@ -277,6 +351,7 @@ def MP_KF():
     odom_sub = rospy.Subscriber('/odom', Odometry, odom_callback, queue_size=3, buff_size=2**24)
     imu_sub = rospy.Subscriber('/imu', Imu, imu_callback, queue_size=3, buff_size=2**24)
     scan_sub = rospy.Subscriber('/scan', LaserScan, scan_callback, queue_size=1, buff_size=2**24)
+    # obtain_symbolic_derivatives()
     plt.ion()
     plt.show()
     # spin() simply keeps python from exiting until this node is stopped
