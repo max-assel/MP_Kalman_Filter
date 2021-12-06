@@ -12,7 +12,7 @@ from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Point, Twist
 
 dist_thresh = np.inf
-
+np.set_printoptions(linewidth=200)
 # modified polar state of system-target relatives is:
 # [beta, 1/r, betadot, rdot / r]
 # initial guess of state
@@ -23,22 +23,36 @@ a_ox = np.array([], dtype=float)
 a_oy = np.array([], dtype=float)
 
 
+##################################################
+# Python code that implements the modified polar #
+# coordinates-based extended Kalman filter. One  #
+# Slight change to coordinates: sin(beta) and    #
+# cos(beta) used instead of beta for stability   #
+##################################################
+
 class MPKalmanFilter:
     def __init__(self):
-        self.H = np.array([[1.0, 0.0, 0.0, 0.0],
-                           [0.0, 1.0, 0.0, 0.0]], dtype=float)
-        self.R = np.eye(2) * 0.00001  # measurement noise
-        self.Q = np.eye(4) * 0.005  # covariance noise
+        self.H = np.array([[1.0, 0.0, 0.0, 0.0, 0.0],
+                           [0.0, 1.0, 0.0, 0.0, 0.0],
+                           [0.0, 0.0, 1.0, 0.0, 0.0]], dtype=float)
+        self.R = np.eye(3) * 0.00001  # measurement noise
+        self.Q = np.eye(5) * 0.005  # covariance noise
         ## CHOOSING A STATE OF 1/R, BETA, RDOT/R, BETADOT
-        self.y_left = np.array([[1.0], [1.0], [0.0], [0.0]], dtype=float)  # MP state
-        self.y_right = np.array([[1.0], [1.0], [0.0], [0.0]], dtype=float)  # MP state
+        self.y_left = np.array([[1.0], [1.0], [0.0], [0.0], [0.0]], dtype=float)  # MP state
+        self.y_right = np.array([[1.0], [1.0], [0.0], [0.0], [0.0]], dtype=float)  # MP state
 
-        self.P_left = np.array([[10.0e-6, 0.0, 0.0, 0.0], [0.0, 10.0e-4, 0.0, 0.0],
-                                [0.0, 0.0, 10.0e-3, 0.0], [0.0, 0.0, 0.0, 10e-4]], dtype=float)  # covariance matrix
-        self.P_right = np.array([[10.0e-6, 0.0, 0.0, 0.0], [0.0, 10.0e-4, 0.0, 0.0],
-                                [0.0, 0.0, 10.0e-3, 0.0], [0.0, 0.0, 0.0, 10e-4]], dtype=float)  # covariance matrix
-        self.G_left = np.array([[1.0], [1.0], [1.0], [1.0]], dtype=float)  # Kalman gain
-        self.G_right = np.array([[1.0], [1.0], [1.0], [1.0]], dtype=float)  # Kalman gain
+        self.P_left = np.array([[10.0e-6, 0.0, 0.0, 0.0, 0.0],
+                                [0.0, 10.0e-4, 0.0, 0.0, 0.0],
+                                [0.0, 0.0, 10.0e-4, 0.0, 0.0],
+                                [0.0, 0.0, 0.0, 10e-4, 0.0],
+                                [0.0, 0.0, 0.0, 0.0, 10e-3]], dtype=float)  # covariance matrix
+        self.P_right = np.array([[10.0e-6, 0.0, 0.0, 0.0, 0.0],
+                                [0.0, 10.0e-4, 0.0, 0.0, 0.0],
+                                [0.0, 0.0, 10.0e-4, 0.0, 0.0],
+                                [0.0, 0.0, 0.0, 10e-4, 0.0],
+                                [0.0, 0.0, 0.0, 0.0, 10e-3]], dtype=float)  # covariance matrix
+        self.G_left = np.array([[1.0], [1.0], [1.0], [1.0], [1.0]], dtype=float)  # Kalman gain
+        self.G_right = np.array([[1.0], [1.0], [1.0], [1.0], [1.0]], dtype=float)  # Kalman gain
         self.t0 = time.time()
         self.t = time.time()
         self.T = self.t - self.t0
@@ -51,12 +65,12 @@ class MPKalmanFilter:
                             [0, 0, 1]]
 
         self.first_call = True  # first odometry call
-        self.first_update_call = True # first KF update call (for plotting)
-        self.y_tilde_left = np.array([[0.0], [0.0]])
-        self.y_tilde_right = np.array([[0.0], [0.0]])
+        self.first_update_call = True  # first KF update call (for plotting)
+        self.y_tilde_left = np.array([[0.0], [0.0], [0.0]])
+        self.y_tilde_right = np.array([[0.0], [0.0], [0.0]])
 
-        self.A_left = np.zeros((4, 4), dtype=float)
-        self.A_right = np.zeros((4, 4), dtype=float)
+        self.A_left = np.zeros((5, 5), dtype=float)
+        self.A_right = np.zeros((5, 5), dtype=float)
 
         # do I need to change these?
         self.theta_0 = 0.0
@@ -66,6 +80,7 @@ class MPKalmanFilter:
         self.r_ins = 0.1
 
 
+    # SETS ORIGINAL POSITION TO GLOBL ORIGIN
     def odom_callback(self, odom_msg):
         position = odom_msg.pose.pose.position
 
@@ -93,9 +108,6 @@ class MPKalmanFilter:
         self.robot_to_world_T = [[np.cos(self.theta_obs), -np.sin(self.theta_obs), self.x_obs],
                             [np.sin(self.theta_obs), np.cos(self.theta_obs), self.y_obs],
                             [0, 0, 1]]
-        # print('updating state: x, y, theta', (self.x_obs, self.y_obs, self.theta_obs))
-        # print('x_0, y_0, theta_0', (self.x_0, self.y_0, self.theta_0))
-
 
 
     # callback for /imu topic, obtaining the acceleration of the system
@@ -108,29 +120,36 @@ class MPKalmanFilter:
         self.t = time.time()
         self.T = self.t - self.t0
         # entries are 1/r, beta, rdot/r, betadot
-        new_y = np.array([[0.0], [0.0], [0.0], [0.0]], dtype=float)  # MP state
+        new_y = np.array([[0.0], [0.0], [0.0], [0.0], [0.0]], dtype=float)  # MP state
 
         # 1 / r
-        new_y[0] = y[0] + (-y[0]*y[2])*self.T
-        # beta
-        new_y[1] = y[1] + y[3]*self.T
+        new_y[0] = y[0] + (-y[3]*y[0])*self.T
+        # sin(beta)
+        new_y[1] = y[1] + y[2]*y[4]*self.T
+        # cos(beta)
+        new_y[2] = y[2] + (-y[1])*y[4]*self.T
         # rdot / r,  NOTE: THIS HAS NOT BEEN VERIFIED YET
-        new_y[2] = y[2] + (y[3]*y[3] - y[2]*y[2] - y[0] * (self.a[0]*np.sin(y[1]) + self.a[1] * np.cos(y[1]))) * self.T
+        new_y[3] = y[3] + (y[4]*y[4] - y[3]*y[3] - y[0] * (self.a[0]*y[1] + self.a[1]*y[2])) * self.T
 
         #  # betadot, NOTE: I CHANGED THE SIGN BEFORE THE LAST TERM. A/H HAVE BETA CW BUT NORMALLY IT IS CCW
-        new_y[3] = y[3] + (-2 * y[2]*y[3] - y[0]*(self.a[0]*np.cos(y[1]) - self.a[1]*np.sin(y[1])))*self.T
+        new_y[4] = y[4] + (-2 * y[3]*y[4] - y[0]*(self.a[0]*y[2] - self.a[1]*y[1]))*self.T
         return new_y
 
     #  linearize the nonlinear MP dynamics, using the discrete update equation
     def linearize(self, y):
         # A = np.zeros((4, 4), dtype=float)
-        a_r = self.a[0]*np.sin(y[1]) + self.a[1]*np.cos(y[1])
-        a_beta = self.a[0]*np.cos(y[1]) - self.a[1]*np.sin(y[1])
+        a_r = self.a[0]*y[1] + self.a[1]*y[2]
+        a_beta = self.a[0]*y[2] - self.a[1]*y[1]
 
-        A = np.array([[1.0 - y[2]*self.T, 0.0, -y[0]*self.T, 0.0],
-                      [0.0, 1, 0.0, self.T],
-                      [-a_r*self.T, -y[0]*a_beta*self.T, 1.0 - 2.0*y[2]*self.T, 2.0*y[3]*self.T],
-                      [-a_beta*self.T, -y[0]*-a_r*self.T, -2.0*y[3]*self.T, 1.0 - 2.0*y[2]*self.T]], dtype=float)
+        #A = np.array([[1.0 - y[2]*self.T, 0.0, -y[0]*self.T, 0.0],
+        #              [0.0, 1, 0.0, self.T],
+        #              [-a_r*self.T, -y[0]*a_beta*self.T, 1.0 - 2.0*y[2]*self.T, 2.0*y[3]*self.T],
+        #              [-a_beta*self.T, -y[0]*-a_r*self.T, -2.0*y[3]*self.T, 1.0 - 2.0*y[2]*self.T]], dtype=float)
+        A = np.array([[1 - y[3]*self.T, 0, 0, -y[0]*self.T, 0],
+                      [0, 1, y[4]*self.T, 0, y[2]*self.T],
+                      [0, -y[4]*self.T, 1, 0, -y[1]*self.T],
+                      [-a_r*self.T, -y[0]*self.a[0]*self.T, -y[0]*self.a[1]*self.T, 1 - 2*y[3]*self.T, 2*y[4]*self.T],
+                      [-a_beta*self.T, y[0]*self.a[1]*self.T, -y[0]*self.a[0]*self.T, -2*y[4]*self.T, 1 - 2*y[3]*self.T]], dtype=float)
         return A
 
     def scan_callback(self, scan_msg):
@@ -211,10 +230,14 @@ class MPKalmanFilter:
         range_right = [right_gap_point[0] - self.x_obs, right_gap_point[1] - self.y_obs]  # obstacle_state - robot_state
         # here, bearing ranges from -pi to pi
         # print('r_vector: ', r_vector)
+        beta_tilde_left = np.arctan2(range_left[0], range_left[1])
+        beta_tilde_right = np.arctan2(range_right[0], range_right[1])
         self.y_tilde_left = np.array([[1.0 / np.linalg.norm(range_left)],
-                                 [np.arctan2(range_left[0], range_left[1])]], dtype=float)
+                                      [np.sin(beta_tilde_left)],
+                                      [np.cos(beta_tilde_left)]], dtype=float)
         self.y_tilde_right = np.array([[1.0 / np.linalg.norm(range_right)],
-                                 [np.arctan2(range_right[0], range_right[1])]], dtype=float)
+                                       [np.sin(beta_tilde_right)],
+                                       [np.cos(beta_tilde_right)]], dtype=float)
     #def measure(self):
     #
 
@@ -232,7 +255,12 @@ class MPKalmanFilter:
         # print('A: ', self.A)
         # print('A_t: ', A_t)
         self.P_left = np.matmul(np.matmul(self.A_left, self.P_left), A_left_t) + self.Q
+        # print('P left: ', self.P_left)
         self.P_right = np.matmul(np.matmul(self.A_right, self.P_right), A_right_t) + self.Q
+        # pt1 =
+        # pt2 =
+        # print('pt1: ', pt1)
+        # print('pt2: ', pt2)
         self.G_left = np.matmul(np.matmul(self.P_left, np.transpose(self.H, (1, 0))),
                            np.linalg.inv(np.matmul(np.matmul(self.H, self.P_left), np.transpose(self.H, (1, 0))) + self.R))
         self.G_right = np.matmul(np.matmul(self.P_right, np.transpose(self.H, (1, 0))),
@@ -245,10 +273,10 @@ class MPKalmanFilter:
         # pt2 =
         # print('pt2 size: ', np.shape(pt2))
         self.y_left = self.y_left + np.matmul(self.G_left, self.y_tilde_left - np.matmul(self.H, self.y_left))
-        self.P_left = np.matmul((np.eye(4) - np.matmul(self.G_left, self.H)), self.P_left)
+        self.P_left = np.matmul((np.eye(5) - np.matmul(self.G_left, self.H)), self.P_left)
         self.y_right = self.y_right + np.matmul(self.G_right, self.y_tilde_right - np.matmul(self.H, self.y_right))
-        self.P_right = np.matmul((np.eye(4) - np.matmul(self.G_right, self.H)), self.P_right)
-
+        self.P_right = np.matmul((np.eye(5) - np.matmul(self.G_right, self.H)), self.P_right)
+        '''
         if np.linalg.norm(self.P_left) > 1000:
             self.P_left = np.array([[10.0e-6, 0.0, 0.0, 0.0], [0.0, 10.0e-4, 0.0, 0.0],
                                     [0.0, 0.0, 10.0e-3, 0.0], [0.0, 0.0, 0.0, 10e-4]], dtype=float)  # covariance matrix
@@ -258,11 +286,11 @@ class MPKalmanFilter:
             self.P_right = np.array([[10.0e-6, 0.0, 0.0, 0.0], [0.0, 10.0e-4, 0.0, 0.0],
                                     [0.0, 0.0, 10.0e-3, 0.0], [0.0, 0.0, 0.0, 10e-4]], dtype=float)  # covariance matrix
             self.y_right = np.array([[1.0], [1.0], [0.0], [0.0]], dtype=float)  # MP state
-
-        print('y tilde left: ', self.y_tilde_left)
-        print('y left: ', self.y_left)
-        print('y_right: ', self.y_right)
-        print('y tilde right: ', self.y_tilde_right)
+        '''
+        #print('y tilde left: ', self.y_tilde_left)
+        #print('y left: ', self.y_left)
+        #print('y_right: ', self.y_right)
+        #print('y tilde right: ', self.y_tilde_right)
         # print('y after: ', self.y)
         # print('P after: ', self.P)
         ## CORRECT
@@ -271,10 +299,14 @@ class MPKalmanFilter:
             plt.figure(figsize=(15, 4))
         ax1 = plt.subplot(121)
         plt.title('Bearing comparison')
-        plt.scatter(self.t, self.y_left[1], c='r', marker='o', label='Bearing estimate, left')
-        plt.scatter(self.t, self.y_tilde_left[1], c='r', marker='^', label='Bearing measurement, left')
-        plt.scatter(self.t, self.y_right[1], c='b', marker='o', label='Bearing estimate, right')
-        plt.scatter(self.t, self.y_tilde_right[1], c='b', marker='^', label='Bearing measurement, right')
+        recovered_beta_tilde_left = np.arctan2(self.y_tilde_left[1], self.y_tilde_left[2])
+        recovered_beta_tilde_right = np.arctan2(self.y_tilde_right[1], self.y_tilde_right[2])
+        recovered_beta_left = np.arctan2(self.y_left[1], self.y_left[2])
+        recovered_beta_right = np.arctan2(self.y_right[1], self.y_right[2])
+        plt.scatter(self.t, recovered_beta_left, c='r', marker='o', label='Bearing estimate, left')
+        plt.scatter(self.t, recovered_beta_tilde_left, c='r', marker='^', label='Bearing measurement, left')
+        plt.scatter(self.t, recovered_beta_right, c='b', marker='o', label='Bearing estimate, right')
+        plt.scatter(self.t, recovered_beta_tilde_right, c='b', marker='^', label='Bearing measurement, right')
         plt.ylim([-6.28, 6.28])
         plt.xlim([self.t - 5, self.t + 5])
         #@ax1.legend('Prediction', 'Sensor')
