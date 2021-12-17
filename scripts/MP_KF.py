@@ -60,6 +60,8 @@ class MPKalmanFilter:
         self.a[0] = imu_msg.linear_acceleration.x
         self.a[1] = imu_msg.linear_acceleration.y
 
+    '''
+    # NOTE: THIS IS OLD, STILL USES CLOCKWISE BETA
     def f_x(self, y):
         x = np.array([[0.0], [0.0], [0.0], [0.0]], dtype=float)
         x[0] = (1/y[0])*y[1]  # r_x
@@ -67,7 +69,7 @@ class MPKalmanFilter:
         x[2] = (1/y[0])*(y[3]*y[1] + y[4]*y[2])  # v_x
         x[3] = (1/y[0])*(y[3]*y[2] - y[4]*y[1])  # v_y
         return x
-
+    '''
     # forward propagate state using euler integration and equation B3 from Aidala/Hammel
     def integrate(self, y):
         self.t = time.time()
@@ -82,29 +84,29 @@ class MPKalmanFilter:
         # cos(beta)
         new_y[2] = y[2] + (-y[1])*y[4]*self.T
         # rdot / r,  NOTE: THIS HAS NOT BEEN VERIFIED YET
-        new_y[3] = y[3] + (y[4]*y[4] - y[3]*y[3] - y[0] * (self.a[0]*y[1] + self.a[1]*y[2])) * self.T
+        new_y[3] = y[3] + (y[4]*y[4] - y[3]*y[3] - y[0] * (self.a[0]*y[2] + self.a[1]*y[1])) * self.T
 
         #  # betadot, NOTE: I CHANGED THE SIGN BEFORE THE LAST TERM. A/H HAVE BETA CW BUT NORMALLY IT IS CCW
-        new_y[4] = y[4] + (-2*y[3]*y[4] - y[0]*(self.a[0]*y[2] - self.a[1]*y[1]))*self.T
+        new_y[4] = y[4] + (-2*y[3]*y[4] - y[0]*(self.a[0]*y[1] - self.a[1]*y[2]))*self.T
         return new_y
 
     #  linearize the nonlinear MP dynamics, using the discrete update equation
     def linearize(self, y):
-        a_r = self.a[0]*y[1] + self.a[1]*y[2]
-        a_beta = self.a[0]*y[2] - self.a[1]*y[1]
+        a_r = self.a[0]*y[2] + self.a[1]*y[1]
+        a_beta = self.a[0]*y[1] - self.a[1]*y[2]
 
-
+        # [1/r, sin(beta), cos(beta), rdot/r, beta_dot
         self.A_cont = np.array([[-y[3], 0.0, 0.0, -y[0], 0.0],
                                 [0.0, 0.0, y[4], 0.0, y[2]],
                                 [0.0, -y[4], 0.0, 0.0, -y[1]],
-                                [-a_r, -y[0]*self.a[0], -y[0]*self.a[1], -2*y[3], 2*y[4]],
-                                [-a_beta, y[0]*self.a[1], -y[0]*self.a[0], -2*y[4], -2*y[3]]], dtype=float)
+                                [-a_r, -y[0]*self.a[1], -y[0]*self.a[0], -2*y[3], 2*y[4]],
+                                [-a_beta, -y[0]*self.a[0], y[0]*self.a[1], -2*y[4], -2*y[3]]], dtype=float)
 
-        self.A = np.array([[1 - y[3]*self.T, 0, 0, -y[0]*self.T, 0],
-                           [0, 1, y[4]*self.T, 0, y[2]*self.T],
-                           [0, -y[4]*self.T, 1, 0, -y[1]*self.T],
-                           [-a_r*self.T, -y[0]*self.a[0]*self.T, -y[0]*self.a[1]*self.T, 1 - 2*y[3]*self.T, 2*y[4]*self.T],
-                           [-a_beta*self.T, y[0]*self.a[1]*self.T, -y[0]*self.a[0]*self.T, -2*y[4]*self.T, 1 - 2*y[3]*self.T]], dtype=float)
+        self.A = np.array([[1 - y[3]*self.T, 0.0, 0.0, -y[0]*self.T, 0.0],
+                           [0.0, 1.0, y[4]*self.T, 0.0, y[2]*self.T],
+                           [0.0, -y[4]*self.T, 1.0, 0.0, -y[1]*self.T],
+                           [-a_r*self.T, -y[0]*self.a[1]*self.T, -y[0]*self.a[0]*self.T, 1 - 2*y[3]*self.T, 2*y[4]*self.T],
+                           [-a_beta*self.T, -y[0]*self.a[0]*self.T, y[0]*self.a[1]*self.T, -2*y[4]*self.T, 1 - 2*y[3]*self.T]], dtype=float)
         # return A  #
 
     def discretizeQ(self):
